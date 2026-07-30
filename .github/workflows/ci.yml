@@ -23,7 +23,17 @@ jobs:
 
       - name: Validate nginx config syntax
         run: |
+          # nginx -t resolves every proxy_pass hostname at config-load
+          # time, not just at request time. These hostnames only exist on
+          # the Compose network (docker-compose.yml), so fake them here
+          # with --add-host purely so the config can load far enough to
+          # be structurally validated.
           docker run --rm \
+            --add-host auth-service:127.0.0.1 \
+            --add-host catalog-service:127.0.0.1 \
+            --add-host cart-service:127.0.0.1 \
+            --add-host order-service:127.0.0.1 \
+            --add-host payment-service:127.0.0.1 \
             -v "$PWD/nginx.conf:/etc/nginx/conf.d/default.conf:ro" \
             -v "$PWD/proxy_params.conf:/etc/nginx/proxy_params.conf:ro" \
             nginx:1.27-alpine nginx -t
