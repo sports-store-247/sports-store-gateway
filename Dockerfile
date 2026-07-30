@@ -35,7 +35,7 @@ RUN npm run build
 # Stage 2: serve with NGINX
 # ---------------------------------------------------------------------
 # TODO: FROM an nginx image (e.g. nginx:1.27-alpine).
-FROM nginx:1.27-alpine
+FROM nginx:stable-alpine
 
 
 # TODO: copy gateway/nginx.conf into the image at
