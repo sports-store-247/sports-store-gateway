@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: sports-store-gateway
+
+jobs:
+  # No app code lives in this repo, just nginx config — "test" here means
+  # validating the config is syntactically correct before it's baked into
+  # an image.
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate nginx config syntax
+        run: |
+          docker run --rm \
+            -v "$PWD/nginx.conf:/etc/nginx/conf.d/default.conf:ro" \
+            -v "$PWD/proxy_params.conf:/etc/nginx/proxy_params.conf:ro" \
+            nginx:1.27-alpine nginx -t
+
+  build:
+    name: build
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      # This image's Dockerfile builds the React frontend itself (stage
+      # 1) before serving it with NGINX (stage 2), so the build context
+      # has to contain both sports-store-gateway/ and
+      # sports-store-frontend/ as siblings — the same layout as the local
+      # dev checkout. A plain single checkout only gives us this repo, so
+      # we check both out explicitly into that layout.
+      - name: Checkout gateway
+        uses: actions/checkout@v4
+        with:
+          path: sports-store-gateway
+
+      - name: Checkout frontend
+        uses: actions/checkout@v4
+        with:
+          repository: sports-store-247/sports-store-frontend
+          path: sports-store-frontend
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # push:false — a PR must never publish an image, only prove the
+      # Dockerfile builds. load:true pulls the built image into the local
+      # Docker daemon so the trivy job below can scan it.
+      - name: Build image (validate only)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: sports-store-gateway/Dockerfile
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:ci
+
+      - name: Save image for trivy job
+        run: docker save ${{ env.IMAGE_NAME }}:ci -o /tmp/${{ env.IMAGE_NAME }}.tar
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-tar
+          path: /tmp/${{ env.IMAGE_NAME }}.tar
+          retention-days: 1
+
+  trivy:
+    name: trivy
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: image-tar
+          path: /tmp
+
+      - name: Load image
+        run: docker load -i /tmp/${{ env.IMAGE_NAME }}.tar
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:ci
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+  # --------------------------------------------------------------------
+  # TODO (tomorrow): push-to-ecr job.
+  #   - Separate `on: push: branches: [main]` trigger (or a second
+  #     workflow file), gated so it never runs on a PR.
+  #   - needs: [test, build, trivy]
+  #   - permissions: id-token: write   (required for OIDC — add at the
+  #     job level, don't widen it for the whole workflow)
+  #   - Read VERSION file + short SHA -> tag, e.g. 1.2.0-${GITHUB_SHA::7}
+  #   - aws-actions/configure-aws-credentials@v4 with role-to-assume set
+  #     to the OIDC role from sports-store-infrastructure's
+  #     github-oidc.tf (blocked until that PR is merged + applied)
+  #   - aws-actions/amazon-ecr-login@v2, then build+push with the
+  #     version tag. Never push `latest`.
+  # --------------------------------------------------------------------
