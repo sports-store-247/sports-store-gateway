@@ -1,0 +1,159 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: sports-store-gateway
+
+jobs:
+  # No app code lives in this repo, just nginx config — "test" here means
+  # validating the config is syntactically correct before it's baked into
+  # an image.
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate nginx config syntax
+        run: |
+          # nginx -t resolves every proxy_pass hostname at config-load
+          # time, not just at request time. These hostnames only exist on
+          # the Compose network (docker-compose.yml), so fake them here
+          # with --add-host purely so the config can load far enough to
+          # be structurally validated.
+          docker run --rm \
+            --add-host auth-service:127.0.0.1 \
+            --add-host catalog-service:127.0.0.1 \
+            --add-host cart-service:127.0.0.1 \
+            --add-host order-service:127.0.0.1 \
+            --add-host payment-service:127.0.0.1 \
+            -v "$PWD/nginx.conf:/etc/nginx/conf.d/default.conf:ro" \
+            -v "$PWD/proxy_params.conf:/etc/nginx/proxy_params.conf:ro" \
+            nginx:1.27-alpine nginx -t
+
+  build:
+    name: build
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      # This image's Dockerfile builds the React frontend itself (stage
+      # 1) before serving it with NGINX (stage 2), so the build context
+      # has to contain both sports-store-gateway/ and
+      # sports-store-frontend/ as siblings — the same layout as the local
+      # dev checkout. A plain single checkout only gives us this repo, so
+      # we check both out explicitly into that layout.
+      - name: Checkout gateway
+        uses: actions/checkout@v4
+        with:
+          path: sports-store-gateway
+
+      - name: Checkout frontend
+        uses: actions/checkout@v4
+        with:
+          repository: sports-store-247/sports-store-frontend
+          path: sports-store-frontend
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # push:false — a PR must never publish an image, only prove the
+      # Dockerfile builds. load:true pulls the built image into the local
+      # Docker daemon so the trivy job below can scan it.
+      - name: Build image (validate only)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: sports-store-gateway/Dockerfile
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:ci
+
+      - name: Save image for trivy job
+        run: docker save ${{ env.IMAGE_NAME }}:ci -o /tmp/${{ env.IMAGE_NAME }}.tar
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-tar
+          path: /tmp/${{ env.IMAGE_NAME }}.tar
+          retention-days: 1
+
+  trivy:
+    name: trivy
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: image-tar
+          path: /tmp
+
+      - name: Load image
+        run: docker load -i /tmp/${{ env.IMAGE_NAME }}.tar
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:ci
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+
+  push-to-ecr:
+    name: push-to-ecr
+    needs: [test, build, trivy]
+    runs-on: ubuntu-latest
+    # Only runs on an actual push to main, never on a PR — a PR must
+    # never publish an image.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      # Same dual-checkout as the build job above — this Dockerfile
+      # needs sports-store-frontend/ as a sibling directory.
+      - name: Checkout gateway
+        uses: actions/checkout@v4
+        with:
+          path: sports-store-gateway
+
+      - name: Checkout frontend
+        uses: actions/checkout@v4
+        with:
+          repository: sports-store-247/sports-store-frontend
+          path: sports-store-frontend
+
+      - name: Compute image tag (VERSION + short SHA, never latest)
+        id: version
+        run: echo "tag=$(cat sports-store-gateway/VERSION)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials (OIDC, no static keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::369113522748:role/sports-store-github-actions-ecr-role
+          aws-region: us-east-1
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: sports-store-gateway/Dockerfile
+          push: true
+          tags: ${{ steps.ecr-login.outputs.registry }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}
