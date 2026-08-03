@@ -1,5 +1,0 @@
-User-agent: *
-Allow: /
-
-# This is a fictional demo storefront. Add the production sitemap URL here
-# after assigning a real public domain.
