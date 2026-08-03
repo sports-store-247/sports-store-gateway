@@ -3,7 +3,6 @@
 # (binding <1024 requires root) and its master process starts as uid 101
 # (nginx) instead of root, so Kubernetes' runAsNonRoot: true works without
 # extra chown/port plumbing.
-FROM nginxinc/nginx-unprivileged:alpine
 # ---------------------------------------------------------------------
 # Stage 1: build the frontend
 # ---------------------------------------------------------------------
@@ -22,7 +21,7 @@ RUN npm run build
 # ---------------------------------------------------------------------
 # Stage 2: serve with NGINX
 # ---------------------------------------------------------------------
-FROM nginx:stable-alpine
+FROM nginxinc/nginx-unprivileged:alpine
 COPY sports-store-gateway/nginx.conf /etc/nginx/conf.d/default.conf
 COPY sports-store-gateway/proxy_params.conf /etc/nginx/proxy_params.conf
 
