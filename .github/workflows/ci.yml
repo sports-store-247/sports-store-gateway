@@ -54,14 +54,6 @@ jobs:
       # we check both out explicitly into that layout.
       - name: Checkout gateway
         uses: actions/checkout@v4
-        with:
-          path: sports-store-gateway
-
-      - name: Checkout frontend
-        uses: actions/checkout@v4
-        with:
-          repository: sports-store-247/sports-store-frontend
-          path: sports-store-frontend
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -73,7 +65,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: sports-store-gateway/Dockerfile
+          file: Dockerfile
           push: false
           load: true
           tags: ${{ env.IMAGE_NAME }}:ci
@@ -125,18 +117,10 @@ jobs:
       # needs sports-store-frontend/ as a sibling directory.
       - name: Checkout gateway
         uses: actions/checkout@v4
-        with:
-          path: sports-store-gateway
-
-      - name: Checkout frontend
-        uses: actions/checkout@v4
-        with:
-          repository: sports-store-247/sports-store-frontend
-          path: sports-store-frontend
 
       - name: Compute image tag (VERSION + short SHA, never latest)
         id: version
-        run: echo "tag=$(cat sports-store-gateway/VERSION)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        run: echo "tag=$(cat VERSION)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials (GitHub Secrets)
         uses: aws-actions/configure-aws-credentials@v4
@@ -155,7 +139,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: sports-store-gateway/Dockerfile
+          file: Dockerfile
           push: true
           tags: ${{ steps.ecr-login.outputs.registry }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}
 
